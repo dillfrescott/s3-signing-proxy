@@ -10,7 +10,6 @@ WorkingDirectory=/root/sign
 ExecStart=/root/sign/s3-signing-proxy
 Restart=on-failure
 RestartSec=5s
-Environment=AWS_REGION=us-east-1
 
 [Install]
 WantedBy=multi-user.target
