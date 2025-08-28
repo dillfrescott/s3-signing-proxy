@@ -1,103 +1,122 @@
 package main
 
 import (
-	"io"
-	"net/http"
-	"net/url"
-	"strings"
-	"time"
+        "context"
+        "io"
+        "net/http"
+        "net/url"
+        "strings"
+        "time"
 
-	"github.com/aws/aws-sdk-go/aws/credentials"
-	"github.com/aws/aws-sdk-go/aws/signer/v4"
+        "github.com/aws/aws-sdk-go-v2/credentials"
+        "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
 )
 
 func main() {
-	target := "https://w4h8.fra.idrivee2-22.com"
-	targetURL, _ := url.Parse(target)
+        target := "https://w4h8.fra.idrivee2-22.com"
+        targetURL, _ := url.Parse(target)
+        credsProvider := credentials.NewStaticCredentialsProvider(
+                "<key>",
+                "<secret key>",
+                "",
+        )
+        signer := v4.NewSigner()
+        const emptyPayloadHash = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        region := "Frankfurt"
 
-	creds := credentials.NewStaticCredentials(
-		"<key>",
-		"<secret key>",
-		"",
-	)
+        http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+                if r.URL.Path == "/" {
+                        w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+                        w.WriteHeader(http.StatusOK)
+                        _, _ = w.Write([]byte("S3 Proxy"))
+                        return
+                }
 
-	signer := v4.NewSigner(creds)
+                if r.Method != "GET" && r.Method != "HEAD" {
+                        http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+                        return
+                }
 
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/" {
-			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte("S3 Proxy"))
-			return
-		}
+                path := r.URL.Path
+                if path == "" {
+                        path = "/"
+                }
 
-		if r.Method != "GET" && r.Method != "HEAD" {
-			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
+                s3Host := "mastodon." + targetURL.Host
+                s3URL := targetURL.Scheme + "://" + s3Host + path
+                if r.URL.RawQuery != "" {
+                        s3URL += "?" + r.URL.RawQuery
+                }
 
-		path := r.URL.Path
-		if path == "" {
-			path = "/"
-		}
+                proxyReq, err := http.NewRequest(r.Method, s3URL, r.Body)
+                if err != nil {
+                        http.Error(w, err.Error(), http.StatusInternalServerError)
+                        return
+                }
 
-		s3URL := target + path
+                proxyReq.URL.Host = s3Host
+                proxyReq.Host = s3Host
+                proxyReq.Header = make(http.Header)
 
-		proxyReq, err := http.NewRequest(r.Method, s3URL, r.Body)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
+                for name, values := range r.Header {
+                        switch name {
+                        case "Range", "If-Modified-Since", "If-None-Match", "Cache-Control", "Content-Type":
+                                for _, value := range values {
+                                        proxyReq.Header.Add(name, value)
+                                }
+                        }
+                }
 
-		proxyReq.Host = "mastodon." + targetURL.Host
-		proxyReq.Header = make(http.Header)
+                proxyReq.Header.Set("x-amz-content-sha256", emptyPayloadHash)
 
-		for name, values := range r.Header {
-			switch name {
-			case "Range", "If-Modified-Since", "If-None-Match", "Cache-Control", "Content-Type":
-				for _, value := range values {
-					proxyReq.Header.Add(name, value)
-				}
-			}
-		}
+                creds, err := credsProvider.Retrieve(context.Background())
+                if err != nil {
+                        http.Error(w, err.Error(), http.StatusInternalServerError)
+                        return
+                }
 
-		_, err = signer.Sign(proxyReq, nil, "s3", "", time.Now())
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
+                err = signer.SignHTTP(
+                        context.Background(),
+                        creds,
+                        proxyReq,
+                        emptyPayloadHash,
+                        "s3",
+                        region,
+                        time.Now(),
+                )
+                if err != nil {
+                        http.Error(w, err.Error(), http.StatusInternalServerError)
+                        return
+                }
 
-		client := &http.Client{}
-		resp, err := client.Do(proxyReq)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadGateway)
-			return
-		}
-		defer resp.Body.Close()
+                client := &http.Client{}
+                resp, err := client.Do(proxyReq)
+                if err != nil {
+                        http.Error(w, err.Error(), http.StatusBadGateway)
+                        return
+                }
+                defer resp.Body.Close()
 
-		for name, values := range resp.Header {
-			if name == "Set-Cookie" ||
-				strings.HasPrefix(name, "X-Amz-") ||
-				name == "Connection" {
-				continue
-			}
-			for _, value := range values {
-				w.Header().Add(name, value)
-			}
-		}
+                for name, values := range resp.Header {
+                        if name == "Set-Cookie" || strings.HasPrefix(name, "X-Amz-") || name == "Connection" {
+                                continue
+                        }
+                        for _, value := range values {
+                                w.Header().Add(name, value)
+                        }
+                }
 
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("X-Content-Type-Options", "nosniff")
-		w.Header().Set("Content-Security-Policy", "default-src 'none'; form-action 'none'")
-		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+                w.Header().Set("Access-Control-Allow-Origin", "*")
+                w.Header().Set("X-Content-Type-Options", "nosniff")
+                w.Header().Set("Content-Security-Policy", "default-src 'none'; form-action 'none'")
+                w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 
-		w.WriteHeader(resp.StatusCode)
+                w.WriteHeader(resp.StatusCode)
 
-		if r.Method == "GET" {
-			_, _ = io.Copy(w, resp.Body)
-		}
-	})
+                if r.Method == "GET" {
+                        _, _ = io.Copy(w, resp.Body)
+                }
+        })
 
-	http.ListenAndServe(":8080", nil)
+        http.ListenAndServe(":8080", nil)
 }
-
