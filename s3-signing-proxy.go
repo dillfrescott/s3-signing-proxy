@@ -61,7 +61,7 @@ func main() {
 			}
 		}
 
-		_, err = signer.Sign(proxyReq, nil, "s3", "us-east-1", time.Now())
+		_, err = signer.Sign(proxyReq, nil, "s3", "", time.Now())
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -100,3 +100,4 @@ func main() {
 
 	http.ListenAndServe(":8080", nil)
 }
+
