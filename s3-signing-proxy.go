@@ -13,7 +13,7 @@ import (
 )
 
 func main() {
-        target := "https://w4h8.fra.idrivee2-22.com"
+        target := "https://<endpoint url>"
         targetURL, _ := url.Parse(target)
         credsProvider := credentials.NewStaticCredentialsProvider(
                 "<key>",
@@ -120,3 +120,4 @@ func main() {
 
         http.ListenAndServe(":8080", nil)
 }
+
